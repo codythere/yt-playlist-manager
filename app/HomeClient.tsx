@@ -8,6 +8,7 @@ import {
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { PlaylistSummary, PlaylistItemSummary } from "@/types/youtube";
 import type { OperationResult } from "@/lib/actions-service";
 import { cn } from "@/lib/utils";
@@ -119,10 +120,7 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok || apiErr) {
     const err = new Error(
       apiErr?.message ?? res.statusText ?? "Request failed"
-    ) as Error & {
-      code?: string;
-      status?: number;
-    };
+    ) as Error & { code?: string; status?: number };
     err.code = apiErr?.code;
     err.status = res.status;
     throw err;
@@ -146,8 +144,59 @@ function usePlaylists(enabled: boolean) {
 }
 
 /* =========================
- * UI 子元件：欄（PlaylistColumn）
+ * UI 子元件
  * ========================= */
+
+/** ✅ 單一影片列：只有 checked 或 item.id 改變時才重渲染 */
+const ItemRow = React.memo(
+  function ItemRow(props: {
+    item: PlaylistItemSummary;
+    checked: boolean;
+    onToggle: (item: PlaylistItemSummary, checked: boolean) => void;
+  }) {
+    const { item, checked, onToggle } = props;
+    return (
+      <label
+        className={cn(
+          "flex cursor-pointer gap-3 rounded-md border bg-background p-2 transition",
+          checked && "border-primary ring-2 ring-primary/30"
+        )}
+      >
+        <Checkbox
+          checked={checked}
+          onCheckedChange={(c) => onToggle(item, Boolean(c))}
+          className="mt-1"
+        />
+        <div className="relative h-14 w-24 overflow-hidden rounded bg-muted flex-shrink-0">
+          {item.thumbnailUrl ? (
+            <Image
+              src={item.thumbnailUrl}
+              alt={item.title}
+              fill
+              sizes="96px"
+              className="object-cover"
+            />
+          ) : null}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="line-clamp-2 text-sm font-medium">{item.title}</div>
+          <div className="text-xs text-muted-foreground">
+            {item.channelTitle}
+          </div>
+        </div>
+      </label>
+    );
+  },
+  (prev, next) => {
+    return (
+      prev.checked === next.checked &&
+      prev.item.playlistItemId === next.item.playlistItemId
+    );
+  }
+);
+
+/** 欄（PlaylistColumn）：改用虛擬滾動，只渲染可視範圍的影片列 */
+/** 欄（PlaylistColumn）：虛擬滾動（用實測高度） */
 function PlaylistColumn(props: {
   playlist: PlaylistSummary;
   items: PlaylistItemSummary[];
@@ -156,6 +205,20 @@ function PlaylistColumn(props: {
   onToggleAll: (checked: boolean) => void;
 }) {
   const { playlist, items, selectedItemIds, onToggleItem, onToggleAll } = props;
+
+  const scrollParentRef = React.useRef<HTMLDivElement>(null);
+
+  // 估一個接近的列高（內容高度 + 間距），初始用；真正以 measureElement 為準
+  const ROW_HEIGHT = 72;
+  const ROW_GAP = 8;
+
+  const rowVirtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: () => ROW_HEIGHT + ROW_GAP, // 初估值含 gap
+    overscan: 8,
+    measureElement: (el) => el.getBoundingClientRect().height, // 用實測值（會含 padding）
+  });
 
   const allSelected =
     items.length > 0 &&
@@ -175,61 +238,66 @@ function PlaylistColumn(props: {
         </label>
       </div>
 
-      {/* 影片清單 */}
-      <div className="flex flex-col gap-2 p-3">
-        {items.length === 0 ? (
-          <div className="text-xs text-muted-foreground px-1 py-6 text-center">
-            此播放清單暫無影片
-          </div>
-        ) : (
-          items.map((item) => {
+      {/* 影片清單（虛擬化容器） */}
+      <div
+        ref={scrollParentRef}
+        className="overflow-auto px-3 py-3"
+        style={{ height: 520 }} // 固定高度才會在欄內滾動
+      >
+        <div
+          style={{
+            height: rowVirtualizer.getTotalSize(), // 交給 react-virtual 計算
+            position: "relative",
+            width: "100%",
+          }}
+        >
+          {rowVirtualizer.getVirtualItems().map((vi) => {
+            const item = items[vi.index];
             const checked = selectedItemIds.has(item.playlistItemId);
+            const isLast = vi.index === items.length - 1;
+
             return (
-              <label
+              <div
                 key={item.playlistItemId}
-                className={cn(
-                  "flex cursor-pointer gap-3 rounded-md border bg-background p-2 transition",
-                  checked && "border-primary ring-2 ring-primary/30"
-                )}
+                ref={rowVirtualizer.measureElement} // 讓虛擬器實測高度
+                data-index={vi.index}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${vi.start}px)`, // 不再手加 index*gap
+                  paddingBottom: isLast ? 0 : ROW_GAP, // 用 padding 製造列間距（可視覺等同 gap）
+                }}
               >
-                <Checkbox
+                <ItemRow
+                  item={item}
                   checked={checked}
-                  onCheckedChange={(c) => onToggleItem(item, Boolean(c))}
-                  className="mt-1"
+                  onToggle={onToggleItem}
                 />
-                <div className="relative h-14 w-24 overflow-hidden rounded bg-muted flex-shrink-0">
-                  {item.thumbnailUrl ? (
-                    <Image
-                      src={item.thumbnailUrl}
-                      alt={item.title}
-                      fill
-                      sizes="96px"
-                      className="object-cover"
-                    />
-                  ) : null}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="line-clamp-2 text-sm font-medium">
-                    {item.title}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {item.channelTitle}
-                  </div>
-                </div>
-              </label>
+              </div>
             );
-          })
-        )}
+          })}
+        </div>
       </div>
     </div>
   );
 }
+
+/** 欄級別也 memo；只要 selected Set 引用/ items 引用不變，就不重繪整欄 */
+const MemoPlaylistColumn = React.memo(PlaylistColumn, (prev, next) => {
+  const samePlaylist = prev.playlist.id === next.playlist.id;
+  const sameSelectedSetRef = prev.selectedItemIds === next.selectedItemIds;
+  const sameItemsRef = prev.items === next.items;
+  return samePlaylist && sameSelectedSetRef && sameItemsRef;
+});
 
 /* =========================
  * 主元件：HomeClient
  * ========================= */
 export default function HomeClient() {
   const queryClient = useQueryClient();
+  const [isPending, startTransition] = React.useTransition();
 
   /* ---- Auth ---- */
   const authQ = useQuery({
@@ -239,7 +307,7 @@ export default function HomeClient() {
   });
   const auth = authQ.data;
 
-  /* ---- 取得播放清單（頂層固定呼叫，用 enabled 控制） ---- */
+  /* ---- 取得播放清單 ---- */
   const playlistsQ = usePlaylists(
     Boolean(auth && (auth.authenticated || auth.usingMock))
   );
@@ -542,13 +610,13 @@ export default function HomeClient() {
    * Render
    * ========================= */
 
-  // 避免「SSR 首屏就是 Loading，但 hydration 還沒開始就被其它 effect 影響」的狀況
-  // 白話文: 先顯示 Loading 畫面，等前端 JS 準備好再渲染真內容
+  // mounted gate：避免 hydration 前 effect 影響首屏
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
   if (!mounted) {
     return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
   }
+
   // 1) Auth 狀態
   if (authQ.isLoading)
     return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
@@ -675,13 +743,13 @@ export default function HomeClient() {
             </div>
 
             {/* Top scrollbar（同步） */}
-            <div
+            {/* <div
               ref={topScrollRef}
               onScroll={onTopScroll}
               className="overflow-x-auto overflow-y-hidden h-4 mb-2"
             >
               <div style={{ width: contentWidth }} className="h-px" />
-            </div>
+            </div> */}
 
             {/* Bottom scrollbar + 真實內容（同步） */}
             <div className="relative">
@@ -721,26 +789,33 @@ export default function HomeClient() {
                     const selectedSet = selectedMap[pid!] ?? new Set<string>();
 
                     return (
-                      <PlaylistColumn
+                      <MemoPlaylistColumn
                         key={playlist.id}
                         playlist={playlist}
                         items={items}
                         selectedItemIds={selectedSet}
                         onToggleItem={(item, checked) => {
-                          setSelectedMap((prev) => {
-                            const cur = new Set(prev[playlist.id] ?? []);
-                            if (checked) cur.add(item.playlistItemId);
-                            else cur.delete(item.playlistItemId);
-                            return { ...prev, [playlist.id]: cur };
+                          // 只更新該欄的 Set；搭配 ItemRow.memo + 虛擬化，只重繪視窗中的少數列
+                          startTransition(() => {
+                            setSelectedMap((prev) => {
+                              const next = { ...prev };
+                              const cur = new Set(next[playlist.id] ?? []);
+                              if (checked) cur.add(item.playlistItemId);
+                              else cur.delete(item.playlistItemId);
+                              next[playlist.id] = cur;
+                              return next;
+                            });
                           });
                         }}
                         onToggleAll={(checked) => {
-                          setSelectedMap((prev) => {
-                            const allIds = items.map((i) => i.playlistItemId);
-                            const cur = checked
-                              ? new Set(allIds)
-                              : new Set<string>();
-                            return { ...prev, [playlist.id]: cur };
+                          startTransition(() => {
+                            setSelectedMap((prev) => {
+                              const next = { ...prev };
+                              next[playlist.id] = checked
+                                ? new Set(items.map((i) => i.playlistItemId))
+                                : new Set<string>();
+                              return next;
+                            });
                           });
                         }}
                       />
