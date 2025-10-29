@@ -13,10 +13,10 @@ import type { PlaylistSummary, PlaylistItemSummary } from "@/types/youtube";
 import type { OperationResult } from "@/lib/actions-service";
 import { cn } from "@/lib/utils";
 
+import { PlaylistList } from "@/app/components/PlaylistList";
 import { Button } from "@/app/components/ui/button";
 import { Checkbox } from "@/app/components/ui/checkbox";
 import { ActionsToolbar } from "@/app/components/ActionsToolbar";
-import { PlaylistList } from "@/app/components/PlaylistList";
 // import { TopBar } from "@/app/components/TopBar";
 
 /* =========================
@@ -134,6 +134,26 @@ async function fetchAuth(): Promise<AuthState> {
   return apiRequest<AuthState>("/api/auth/me");
 }
 
+// 把某個 playlist 的快取 items 過濾掉指定 playlistItemIds
+function removeFromPlaylistCache(
+  queryClient: import("@tanstack/react-query").QueryClient,
+  playlistId: string,
+  removeIds: string[]
+) {
+  const key = ["playlist-items", playlistId] as const;
+  const prev = queryClient.getQueryData<{
+    playlist: PlaylistSummary;
+    items: PlaylistItemSummary[];
+  }>(key);
+  if (!prev) return;
+  const removeSet = new Set(removeIds);
+  const next = {
+    ...prev,
+    items: prev.items.filter((it) => !removeSet.has(it.playlistItemId)),
+  };
+  queryClient.setQueryData(key, next);
+}
+
 function usePlaylists(enabled: boolean) {
   return useQuery({
     queryKey: ["playlists"],
@@ -196,7 +216,6 @@ const ItemRow = React.memo(
   }
 );
 
-/** 欄（PlaylistColumn）：改用虛擬滾動，只渲染可視範圍的影片列 */
 /** 欄（PlaylistColumn）：虛擬滾動（用實測高度） */
 function PlaylistColumn(props: {
   playlist: PlaylistSummary;
@@ -209,16 +228,15 @@ function PlaylistColumn(props: {
 
   const scrollParentRef = React.useRef<HTMLDivElement>(null);
 
-  // 估一個接近的列高（內容高度 + 間距），初始用；真正以 measureElement 為準
   const ROW_HEIGHT = 72;
   const ROW_GAP = 8;
 
   const rowVirtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollParentRef.current,
-    estimateSize: () => ROW_HEIGHT + ROW_GAP, // 初估值含 gap
+    estimateSize: () => ROW_HEIGHT + ROW_GAP,
     overscan: 8,
-    measureElement: (el) => el.getBoundingClientRect().height, // 用實測值（會含 padding）
+    measureElement: (el) => el.getBoundingClientRect().height,
   });
 
   const allSelected =
@@ -243,11 +261,11 @@ function PlaylistColumn(props: {
       <div
         ref={scrollParentRef}
         className="overflow-auto px-3 py-3"
-        style={{ height: 520 }} // 固定高度才會在欄內滾動
+        style={{ height: 520 }}
       >
         <div
           style={{
-            height: rowVirtualizer.getTotalSize(), // 交給 react-virtual 計算
+            height: rowVirtualizer.getTotalSize(),
             position: "relative",
             width: "100%",
           }}
@@ -260,15 +278,15 @@ function PlaylistColumn(props: {
             return (
               <div
                 key={item.playlistItemId}
-                ref={rowVirtualizer.measureElement} // 讓虛擬器實測高度
+                ref={rowVirtualizer.measureElement}
                 data-index={vi.index}
                 style={{
                   position: "absolute",
                   top: 0,
                   left: 0,
                   width: "100%",
-                  transform: `translateY(${vi.start}px)`, // 不再手加 index*gap
-                  paddingBottom: isLast ? 0 : ROW_GAP, // 用 padding 製造列間距（可視覺等同 gap）
+                  transform: `translateY(${vi.start}px)`,
+                  paddingBottom: isLast ? 0 : ROW_GAP,
                 }}
               >
                 <ItemRow
@@ -304,8 +322,9 @@ export default function HomeClient() {
   const authQ = useQuery({
     queryKey: ["auth"],
     queryFn: fetchAuth,
-    staleTime: 0, // 或維持極短
+    staleTime: 0,
     refetchOnMount: "always",
+    refetchOnWindowFocus: true, // ✅ 重新聚焦就重抓
   });
   const auth = authQ.data;
 
@@ -375,8 +394,8 @@ export default function HomeClient() {
         return { playlist: p, items };
       },
       enabled: view === "manage-items",
-      staleTime: 0, // ✅
-      refetchOnMount: "always", // ✅
+      staleTime: 0,
+      refetchOnMount: "always",
     })),
   });
 
@@ -387,6 +406,11 @@ export default function HomeClient() {
     [selectedMap]
   );
   const estimatedQuota = totalSelectedCount * 50;
+
+  /* ---- 目標清單（由工具列 DDL 選擇） ---- */
+  const [targetPlaylistId, setTargetPlaylistId] = React.useState<string | null>(
+    null
+  );
 
   /* ---- Mutations ---- */
   const addMutation = useMutation({
@@ -412,13 +436,51 @@ export default function HomeClient() {
         method: "POST",
         body: JSON.stringify(payload),
       }),
-    onSuccess: (_, variables) => {
-      setSelectedMap((prev) => ({
-        ...prev,
-        [variables.sourcePlaylistId]: new Set(),
-      }));
-      queryClient.invalidateQueries({ queryKey: ["playlists"] });
-      queryClient.invalidateQueries({
+
+    // ⭐ 樂觀更新
+    onMutate: async (variables) => {
+      const { sourcePlaylistId, playlistItemIds } = variables;
+
+      // 1) 取消進行中的同鍵查詢，避免它覆蓋我們的樂觀結果
+      await queryClient.cancelQueries({
+        queryKey: ["playlist-items", sourcePlaylistId],
+      });
+
+      // 2) 拿快照
+      const key = ["playlist-items", sourcePlaylistId] as const;
+      const snapshot = queryClient.getQueryData<{
+        playlist: PlaylistSummary;
+        items: PlaylistItemSummary[];
+      }>(key);
+
+      // 3) 立即從快取移除（畫面立刻消失）
+      removeFromPlaylistCache(queryClient, sourcePlaylistId, playlistItemIds);
+
+      // 4) 同時把選取狀態清空
+      setSelectedMap((prev) => ({ ...prev, [sourcePlaylistId]: new Set() }));
+
+      // 5) 傳回快照給 onError 回滾用
+      return { key, snapshot };
+    },
+
+    // 失敗 → 回滾
+    onError: (_err, _variables, context) => {
+      if (context?.key && context?.snapshot) {
+        queryClient.setQueryData(context.key, context.snapshot);
+      }
+    },
+
+    // 成功或失敗都會進來
+    onSettled: async (_data, _error, variables) => {
+      // 先做一次 invalidation（背景更新）
+      await queryClient.invalidateQueries({ queryKey: ["playlists"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["playlist-items", variables.sourcePlaylistId],
+      });
+
+      // 再等 200ms 做一次強制 refetch（吃掉 YouTube 最終一致性）
+      await new Promise((r) => setTimeout(r, 200));
+      await queryClient.refetchQueries({
         queryKey: ["playlist-items", variables.sourcePlaylistId],
       });
     },
@@ -476,11 +538,13 @@ export default function HomeClient() {
     return result;
   }
 
-  /* ---- 動作列 Callback（零參數） ---- */
+  /* ---- 動作列 Callback ---- */
+
   const handleAddSelected = () => {
     const { allVideoIds } = getSelectedFromAllColumns();
     if (allVideoIds.length === 0) return;
 
+    // Add 保持原行為（若你也想走 DDL，可和 Move 同樣改法）
     const hint =
       "輸入目標播放清單 ID（或精準標題）。\n可用的清單：\n" +
       allPlaylists.map((p) => `• ${p.title} (${p.id})`).join("\n");
@@ -492,24 +556,25 @@ export default function HomeClient() {
     addMutation.mutate({ targetPlaylistId: to, videoIds: allVideoIds });
   };
 
-  const handleRemoveSelected = () => {
-    Object.entries(selectedMap).forEach(([sourcePlaylistId, set]) => {
-      const ids = Array.from(set);
-      if (ids.length > 0) {
-        removeMutation.mutate({ playlistItemIds: ids, sourcePlaylistId });
-      }
-    });
-  };
+  // ⭐ 修正重點：優先使用 DDL 的目標；若沒有就提醒，不再使用 prompt；加入二次確認
+  const handleMoveSelected = (targetIdFromToolbar?: string | null) => {
+    const to = (targetIdFromToolbar ?? targetPlaylistId) || null;
+    if (!to) {
+      window.alert("請先在工具列的下拉選單選擇【目標播放清單】。");
+      return;
+    }
 
-  const handleMoveSelected = () => {
-    const hint =
-      "輸入目標播放清單 ID（或精準標題）。\n可用的清單：\n" +
-      allPlaylists.map((p) => `• ${p.title} (${p.id})`).join("\n");
-    const input = window.prompt(hint) || "";
-    const to =
-      allPlaylists.find((p) => p.id === input || p.title === input)?.id ?? "";
-    if (!to) return;
+    const total = totalSelectedCount;
+    if (total === 0) return;
 
+    const targetName =
+      allPlaylists.find((p) => p.id === to)?.title ?? `(ID: ${to})`;
+    const ok = window.confirm(
+      `確認要將已勾選的 ${total} 部影片「一併移轉」到「${targetName}」嗎？`
+    );
+    if (!ok) return;
+
+    // 逐來源清單執行 move
     Object.entries(selectedMap).forEach(([sourcePlaylistId, set]) => {
       const itemsInSource =
         columnsData
@@ -524,6 +589,15 @@ export default function HomeClient() {
             videoId: it.videoId,
           })),
         });
+      }
+    });
+  };
+
+  const handleRemoveSelected = () => {
+    Object.entries(selectedMap).forEach(([sourcePlaylistId, set]) => {
+      const ids = Array.from(set);
+      if (ids.length > 0) {
+        removeMutation.mutate({ playlistItemIds: ids, sourcePlaylistId });
       }
     });
   };
@@ -544,6 +618,7 @@ export default function HomeClient() {
       queryClient.invalidateQueries({ queryKey: ["playlists"] });
       setCheckedPlaylistIds(new Set());
       setSelectedMap({});
+      setTargetPlaylistId(null);
       setView("select-playlists");
     },
   });
@@ -572,7 +647,6 @@ export default function HomeClient() {
     syncingRef.current = null;
   };
 
-  // 追蹤每欄的 items 長度，內容變化時重算寬度
   const columnsKey = React.useMemo(
     () =>
       columnsData
@@ -584,7 +658,6 @@ export default function HomeClient() {
     [columnsData, confirmedPlaylists]
   );
 
-  // 更穩定的寬度計算：用 rowRef.scrollWidth
   React.useLayoutEffect(() => {
     const update = () => {
       const w =
@@ -594,7 +667,7 @@ export default function HomeClient() {
       setContentWidth(w);
     };
 
-    update(); // 初次
+    update();
 
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined" && rowRef.current) {
@@ -613,14 +686,12 @@ export default function HomeClient() {
    * Render
    * ========================= */
 
-  // mounted gate：避免 hydration 前 effect 影響首屏
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
   if (!mounted) {
     return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
   }
 
-  // 1) Auth 狀態
   if (authQ.isLoading)
     return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
   if (authQ.isError || !auth) {
@@ -630,7 +701,8 @@ export default function HomeClient() {
       </div>
     );
   }
-  if (!auth.authenticated && !auth.usingMock) {
+  // ✅ 只看 authenticated
+  if (!auth.authenticated) {
     return (
       <div className="mx-auto max-w-2xl space-y-4 rounded-lg border bg-card p-6 shadow-sm">
         <h1 className="text-xl font-semibold">
@@ -647,7 +719,6 @@ export default function HomeClient() {
     );
   }
 
-  // 2) 主介面
   return (
     <div className="min-h-dvh">
       {/* <TopBar /> */}
@@ -722,10 +793,11 @@ export default function HomeClient() {
             <ActionsToolbar
               selectedCount={totalSelectedCount}
               playlists={allPlaylists}
-              selectedPlaylistId={null}
+              selectedPlaylistId={targetPlaylistId} // ✅ 受控目標清單
+              onTargetChange={setTargetPlaylistId} // ✅ 受控回傳
               onAdd={handleAddSelected}
               onRemove={handleRemoveSelected}
-              onMove={handleMoveSelected}
+              onMove={(tid?: string | null) => handleMoveSelected(tid)} // ✅ 帶入目標
               onUndo={onUndo}
               isLoading={
                 addMutation.isPending ||
@@ -745,16 +817,6 @@ export default function HomeClient() {
               </Button>
             </div>
 
-            {/* Top scrollbar（同步） */}
-            {/* <div
-              ref={topScrollRef}
-              onScroll={onTopScroll}
-              className="overflow-x-auto overflow-y-hidden h-4 mb-2"
-            >
-              <div style={{ width: contentWidth }} className="h-px" />
-            </div> */}
-
-            {/* Bottom scrollbar + 真實內容（同步） */}
             <div className="relative">
               <div
                 ref={bottomScrollRef}
@@ -798,7 +860,6 @@ export default function HomeClient() {
                         items={items}
                         selectedItemIds={selectedSet}
                         onToggleItem={(item, checked) => {
-                          // 只更新該欄的 Set；搭配 ItemRow.memo + 虛擬化，只重繪視窗中的少數列
                           startTransition(() => {
                             setSelectedMap((prev) => {
                               const next = { ...prev };

@@ -1,8 +1,8 @@
 // lib/google.ts
 import "server-only";
 import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
-import type { Credentials } from "google-auth-library";
+import type { OAuth2Client, Credentials } from "google-auth-library";
+import type { youtube_v3 } from "googleapis";
 import { db } from "./db";
 import { logger } from "./logger";
 
@@ -19,9 +19,9 @@ export interface StoredTokens {
   refresh_token: string | null;
   scope: string | null;
   token_type: string | null;
-  expiry_date: number | null;
+  expiry_date: number | null; // epoch ms
   id_token: string | null;
-  updated_at: number | null;
+  updated_at: number | null; // epoch ms
 }
 
 export function isGoogleConfigured(): boolean {
@@ -49,13 +49,11 @@ export function buildAuthUrl(state: string): string | null {
   return oauth2.generateAuthUrl({
     access_type: "offline",
     prompt: "consent", // 需要 refresh_token
-    include_granted_scopes: true, // 盡量重用已授權 scope
+    include_granted_scopes: true,
     scope: scopes,
     state,
   });
 }
-// 若你想保留舊名稱，也可同時導出別名：
-// export const getAuthUrl = buildAuthUrl;
 
 /** 交換 code → tokens */
 export async function exchangeCodeForTokens(
@@ -137,16 +135,36 @@ export async function getUserTokens(
   return row ?? null;
 }
 
-/** 建立 YouTube client；若沒有 tokens 則回 null（讓 service 落回 mock） */
-export async function getYouTubeClient(userId: string) {
+/* =========================================================
+ *   YouTube Client 取得：提供「一般」與「嚴格」兩種介面
+ * ========================================================= */
+
+/**
+ * 延伸版（推薦在 API 端使用）：
+ * - 有 token 時：回 { yt, mock: false }
+ * - 無 token 時：
+ *   - requireReal=true → throw { code: "NO_TOKENS" }
+ *   - requireReal=false → 回 { yt: null, mock: true } 並警告 log（方便在列表讀取等非關鍵流程 fallback）
+ */
+export async function getYouTubeClientEx(opts: {
+  userId: string;
+  requireReal?: boolean;
+}): Promise<{ yt: youtube_v3.Youtube | null; mock: boolean }> {
+  const { userId, requireReal } = opts;
+
   try {
     const row = await getUserTokens(userId);
+
     if (!row || (!row.access_token && !row.refresh_token)) {
-      logger.warn(
-        { userId },
-        "getYouTubeClient: no tokens found, falling back to mock"
-      );
-      return null;
+      const msg = "getYouTubeClient: no tokens found";
+      if (requireReal) {
+        const err: any = new Error(msg);
+        err.code = "NO_TOKENS";
+        throw err;
+      } else {
+        logger.warn({ userId }, `${msg}, falling back to mock`);
+        return { yt: null, mock: true };
+      }
     }
 
     const oauth2 = getOAuthClient();
@@ -156,7 +174,7 @@ export async function getYouTubeClient(userId: string) {
       expiry_date: row.expiry_date ?? undefined,
     });
 
-    // （可選）偵測刷新事件，把新的 token 寫回 DB
+    // 自動刷新 → 寫回 DB
     oauth2.on("tokens", async (t) => {
       try {
         const merged: Credentials = {
@@ -173,12 +191,29 @@ export async function getYouTubeClient(userId: string) {
       }
     });
 
-    return google.youtube({ version: "v3", auth: oauth2 });
+    const yt = google.youtube({ version: "v3", auth: oauth2 });
+    return { yt, mock: false };
   } catch (err: any) {
+    // 嚴格模式下的錯誤直接往上丟；一般模式回 mock
+    if (err?.code === "NO_TOKENS") throw err;
+
     logger.error(
-      { err, userId },
+      { err, userId: opts.userId },
       "getYouTubeClient failed; falling back to mock"
     );
-    return null;
+    if (opts.requireReal) throw err; // 嚴格模式不要 fallback
+    return { yt: null, mock: true };
   }
+}
+
+/**
+ * 相容舊介面（保持你現有程式不爆）：
+ * - 有 token：回 youtube client
+ * - 無 token：回 null（等同以前的行為）
+ */
+export async function getYouTubeClient(
+  userId: string
+): Promise<youtube_v3.Youtube | null> {
+  const { yt } = await getYouTubeClientEx({ userId, requireReal: false });
+  return yt;
 }

@@ -1,41 +1,27 @@
+// /app/api/auth/me/route.ts
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { getSession } from "@/lib/auth";
-import { getUserTokens } from "@/lib/google";
+import { resolveAuthContext } from "@/lib/auth";
+// 若你未來要根據 token 狀態回報更多資訊，可引入 getUserTokens
+// import { getUserTokens } from "@/lib/google";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function GET() {
-  let userId: string | null = null;
+  // 透過 lib/auth 的統一邏輯取得 session（會從 cookies 解析）
+  const ctx = await resolveAuthContext();
 
-  // 1) 先試 getSession（若你有）
-  try {
-    const s = await Promise.resolve(getSession?.());
-    if (s?.userId) userId = s.userId;
-  } catch {}
+  // 回傳給前端 HomeClient 期望的 AuthState 形狀
+  const body = {
+    authenticated: !!ctx.loggedIn,
+    userId: ctx.loggedIn ? ctx.userId : null,
+    email: ctx.loggedIn ? ctx.email ?? null : null,
+    // 目前所有寫入都要求真實 API，這裡一律回 false，避免 UI 誤以為可在未登入時讀取
+    usingMock: false,
+  };
 
-  // 2) 再從 cookie 讀（⬅️ 這裡也要 await cookies()）
-  if (!userId) {
-    const cookieStore = await cookies();
-    const raw = cookieStore.get("ytpm_session")?.value;
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed?.userId) userId = parsed.userId as string;
-      } catch {}
-    }
-  }
-
-  const tokens = userId ? await getUserTokens(userId) : null;
-
-  return NextResponse.json(
-    {
-      loggedIn: !!userId,
-      userId: userId ?? undefined,
-      authenticated: !!userId,
-      email: userId ?? undefined,
-      usingMock: !tokens,
-    },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+  const res = NextResponse.json(body, { status: 200 });
+  // 強制不要快取，清 cookie 後就能立即反映未登入狀態
+  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  return res;
 }

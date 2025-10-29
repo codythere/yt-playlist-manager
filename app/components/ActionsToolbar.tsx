@@ -1,94 +1,128 @@
+// /app/components/ActionsToolbar.tsx
 "use client";
-
 import * as React from "react";
 import { Button } from "@/app/components/ui/button";
 import type { PlaylistSummary } from "@/types/youtube";
 
-interface ActionsToolbarProps {
+export interface ActionsToolbarProps {
   selectedCount: number;
   playlists: PlaylistSummary[];
+  /** 受控目標清單（可為 null） */
   selectedPlaylistId?: string | null;
+  /** 受控模式：目標變更回呼（可選） */
+  onTargetChange?: (id: string | null) => void;
+
   onAdd: () => void;
   onRemove: () => void;
-  onMove: (targetPlaylistId: string) => void;
+  /** 可接受 targetId；若父層不傳，仍可維持舊介面呼叫 `onMove()` */
+  onMove: (targetId?: string | null) => void;
   onUndo: () => void;
+
   isLoading?: boolean;
   estimatedQuota?: number;
 }
 
-export function ActionsToolbar({
-  selectedCount,
-  playlists,
-  selectedPlaylistId,
-  onAdd,
-  onRemove,
-  onMove,
-  onUndo,
-  isLoading,
-  estimatedQuota,
-}: ActionsToolbarProps) {
-  const [targetPlaylistId, setTargetPlaylistId] = React.useState<string>("");
+export function ActionsToolbar(props: ActionsToolbarProps) {
+  const {
+    selectedCount,
+    playlists,
+    selectedPlaylistId,
+    onTargetChange,
+    onAdd,
+    onRemove,
+    onMove,
+    onUndo,
+    isLoading,
+    estimatedQuota,
+  } = props;
 
-  const moveDisabled = selectedCount === 0 || !targetPlaylistId || isLoading;
-  const hasSelection = selectedCount > 0;
+  // 非受控：自己保留
+  const [localTargetId, setLocalTargetId] = React.useState<string | null>(null);
+
+  // 若父層有提供 selectedPlaylistId，則視為受控值；否則用自己的
+  const currentTargetId =
+    typeof selectedPlaylistId !== "undefined"
+      ? selectedPlaylistId
+      : localTargetId;
+
+  const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value || null;
+
+    if (onTargetChange) {
+      onTargetChange(v);
+    } else {
+      setLocalTargetId(v);
+    }
+  };
+
+  const disabled = isLoading || selectedCount === 0;
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-sm md:flex-row md:items-center md:justify-between">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span>已選取</span>
-        <span className="font-semibold text-foreground">{selectedCount}</span>
-        {estimatedQuota ? (
-          <span className="text-xs text-muted-foreground">
-            預估配額：{estimatedQuota}
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3">
+      <div className="text-sm">
+        已勾選：<b>{selectedCount}</b> 部影片
+        {typeof estimatedQuota === "number" ? (
+          <span className="text-muted-foreground">
+            （估算配額 {estimatedQuota}）
           </span>
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={!hasSelection || isLoading} onClick={onAdd}>
-          一併加入
+      <div className="flex items-center gap-2">
+        <select
+          className="border rounded px-2 py-1 text-sm"
+          value={currentTargetId ?? ""}
+          onChange={handleSelectChange}
+        >
+          <option value="">選擇目標播放清單</option>
+          {playlists.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.title}
+            </option>
+          ))}
+        </select>
+
+        <Button
+          type="button" // ✅ 明確指定
+          size="sm"
+          variant="secondary"
+          onClick={onAdd}
+          disabled={disabled}
+        >
+          新增到清單
         </Button>
 
         <Button
+          type="button" // ✅ 明確指定
           size="sm"
-          variant="secondary"
-          disabled={!hasSelection || isLoading}
+          variant="outline"
           onClick={onRemove}
+          disabled={disabled}
         >
-          一併移除
+          從原清單移除
         </Button>
 
-        <div className="flex items-center gap-2">
-          <select
-            aria-label="目標播放清單"
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            value={targetPlaylistId}
-            onChange={(event) => setTargetPlaylistId(event.target.value)}
-          >
-            <option value="">選擇目標清單</option>
-            {playlists
-              .filter((playlist) => playlist.id !== selectedPlaylistId)
-              .map((playlist) => (
-                <option key={playlist.id} value={playlist.id}>
-                  {playlist.title}
-                </option>
-              ))}
-          </select>
+        {/* 呼叫 onMove 並把目前選取目標帶出去 */}
+        <Button
+          type="button" // ✅ 明確指定
+          size="sm"
+          onClick={() => onMove(currentTargetId)}
+          disabled={disabled || !currentTargetId}
+        >
+          一併移轉
+        </Button>
 
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={moveDisabled}
-            onClick={() => onMove(targetPlaylistId)}
-          >
-            一併移轉
-          </Button>
-        </div>
-
-        <Button size="sm" variant="ghost" disabled={isLoading} onClick={onUndo}>
-          動作回復
+        <Button
+          type="button" // ✅ 明確指定
+          size="sm"
+          variant="ghost"
+          onClick={onUndo}
+        >
+          復原
         </Button>
       </div>
     </div>
   );
 }
+
+export default ActionsToolbar;
