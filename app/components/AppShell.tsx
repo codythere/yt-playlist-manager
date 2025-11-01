@@ -1,10 +1,13 @@
+// /app/components/AppShell.tsx
 "use client";
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Menu, History, ListMusic } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Image from "next/image";
+import { AvatarMenu } from "@/app/components/AvatarMenu";
 
 import {
   Sheet,
@@ -14,18 +17,50 @@ import {
 } from "@/app/components/ui/sheet";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
+type AuthMe = {
+  authenticated: boolean;
+  userId: string | null;
+  email: string | null;
+  usingMock: boolean;
+};
+
 export function AppShell({
   children,
   footer,
 }: {
   children: React.ReactNode;
-  /** 可選：頁面底部區塊（例如 <Footer />），會貼齊底部 */
   footer?: React.ReactNode;
 }) {
-  // 手機：覆蓋式側欄
+  const router = useRouter();
   const [mobileOpen, setMobileOpen] = React.useState(false);
-  // 桌機：內嵌側欄收合
   const [desktopOpen, setDesktopOpen] = React.useState(true);
+
+  // ===== 取得 /api/auth/me =====
+  const [me, setMe] = React.useState<AuthMe | null>(null);
+  const [loadingMe, setLoadingMe] = React.useState(true);
+
+  React.useEffect(() => {
+    let aborted = false;
+    (async () => {
+      try {
+        setLoadingMe(true);
+        const res = await fetch("/api/auth/me", {
+          method: "GET",
+          cache: "no-store",
+          headers: { "cache-control": "no-store" },
+        });
+        const data = (await res.json()) as AuthMe;
+        if (!aborted) setMe(data);
+      } catch {
+        if (!aborted) setMe(null);
+      } finally {
+        if (!aborted) setLoadingMe(false);
+      }
+    })();
+    return () => {
+      aborted = true;
+    };
+  }, []);
 
   const NavItems = (
     <nav className="space-y-1 p-4">
@@ -65,7 +100,7 @@ export function AppShell({
         {desktopOpen ? NavItems : null}
       </aside>
 
-      {/* 手機側欄（Radix Sheet 覆蓋式） */}
+      {/* 手機側欄 */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-64 p-0">
           <SheetHeader>
@@ -77,7 +112,7 @@ export function AppShell({
         </SheetContent>
       </Sheet>
 
-      {/* 內容區：預留固定側欄空間 + 欄式排版（header / main / footer） */}
+      {/* 內容區 */}
       <div
         className={cn(
           "flex-1 transition-all duration-200",
@@ -96,7 +131,7 @@ export function AppShell({
                 <Menu className="h-5 w-5" />
               </button>
 
-              {/* 桌機：切換固定側欄寬度 */}
+              {/* 桌機：切換固定側欄 */}
               <button
                 aria-label="Toggle sidebar"
                 aria-expanded={desktopOpen}
@@ -106,17 +141,39 @@ export function AppShell({
                 <Menu className="h-5 w-5" />
               </button>
 
+              {/* 左側：Logo 與標題 */}
               <div className="flex items-center gap-1.5 text-base font-semibold">
                 <Image src="/logo.png" alt="App Logo" width={20} height={20} />
                 YT Playlist Manager
               </div>
+
+              {/* 右側：使用者區塊（實際資料） */}
+              <div className="ml-auto">
+                {loadingMe ? (
+                  <div className="h-7 w-28 rounded-full bg-muted animate-pulse" />
+                ) : me?.authenticated ? (
+                  <AvatarMenu
+                    user={{
+                      // 目前 /api/auth/me 沒回 name/image，就以 email 當顯示名稱
+                      name: me.email ?? me.userId ?? "User",
+                      email: me.email,
+                      image: null,
+                    }}
+                    redirectTo="/login"
+                  />
+                ) : (
+                  <button
+                    className="rounded-md px-3 py-1.5 text-sm font-medium hover:bg-accent"
+                    onClick={() => router.push("/login")}
+                  >
+                    Login
+                  </button>
+                )}
+              </div>
             </div>
           </header>
 
-          {/* 撐開剩餘高度的主內容 */}
           <main className="flex-1 p-6">{children}</main>
-
-          {/* 會貼齊底部的 Footer（可選） */}
           {footer ?? null}
         </div>
       </div>

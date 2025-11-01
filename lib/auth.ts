@@ -10,6 +10,11 @@ export type Session = {
   authenticated?: boolean;
 };
 
+export type AuthUser = {
+  id: string;
+  email: string | null;
+};
+
 function parseSession(raw: string | undefined | null): Session | null {
   if (!raw) return null;
   try {
@@ -84,6 +89,32 @@ export async function requireUserId(
   }
 }
 
+/**
+ * ✅ 新增：取得目前登入使用者（回傳 { id, email }）
+ * - 會優先用 NextRequest 讀同步 cookie；否則退回 headers cookies()
+ * - 失敗時回傳 null
+ */
+export async function getCurrentUser(
+  req?: NextRequest
+): Promise<AuthUser | null> {
+  const hit =
+    (await requireUserId(req)) ??
+    // 保底再掃一次（避免上面意外失敗）
+    (await (async () => {
+      try {
+        const store = await cookies();
+        const s = parseSession(store.get(SESSION_COOKIE)?.value ?? null);
+        return s?.userId
+          ? { userId: String(s.userId), email: s.email ?? null }
+          : null;
+      } catch {
+        return null;
+      }
+    })());
+
+  return hit ? { id: hit.userId, email: hit.email } : null;
+}
+
 /** 設定 cookie */
 export async function setSessionCookie(
   value: string,
@@ -99,10 +130,24 @@ export async function setSessionCookie(
   });
 }
 
-/** 清除 cookie */
-export async function clearSessionCookie() {
+/**
+ * 清除 cookie
+ * - 預設只清 `ytpm_session`
+ * - 可傳入額外 cookie 名稱一起清（例如 access_token / refresh_token 等）
+ */
+export async function clearSessionCookie(extraNames: string[] = []) {
   const store = await cookies();
   store.delete(SESSION_COOKIE);
+
+  // 若想一併清除 OAuth 相關 cookie，可在呼叫端傳入：
+  // clearSessionCookie(["access_token", "refresh_token", "google_oauth_state", "google_oauth_verifier"])
+  for (const name of extraNames) {
+    try {
+      store.delete(name);
+    } catch {
+      /* ignore single delete failure */
+    }
+  }
 }
 
 /** 供 /api/auth/me 使用 */

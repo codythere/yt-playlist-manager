@@ -69,6 +69,19 @@
   @apply border-border;
 }
 
+/* 永遠保留右側捲軸位置，避免任何寬度跳動 */
+html {
+  overflow-y: scroll;
+}
+
+/* 若仍有組件嘗試鎖捲動，取消它對 body 的補償（右邊 padding） */
+body[data-scroll-locked] {
+  overflow-y: scroll !important;
+  overflow-x: auto !important;
+  padding-right: 0 !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
 body {
   @apply bg-background text-foreground antialiased;
 }
