@@ -4,6 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import { Menu, History, ListMusic } from "lucide-react";
 import { cn } from "@/lib/utils";
+import Image from "next/image";
+
 import {
   Sheet,
   SheetContent,
@@ -12,7 +14,14 @@ import {
 } from "@/app/components/ui/sheet";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  footer,
+}: {
+  children: React.ReactNode;
+  /** 可選：頁面底部區塊（例如 <Footer />），會貼齊底部 */
+  footer?: React.ReactNode;
+}) {
   // 手機：覆蓋式側欄
   const [mobileOpen, setMobileOpen] = React.useState(false);
   // 桌機：內嵌側欄收合
@@ -68,39 +77,48 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      {/* Main：自動為固定側欄留出空間 */}
+      {/* 內容區：預留固定側欄空間 + 欄式排版（header / main / footer） */}
       <div
         className={cn(
           "flex-1 transition-all duration-200",
           desktopOpen ? "md:ml-56" : "md:ml-0"
         )}
       >
-        <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
-          <div className="flex h-14 items-center gap-2 px-4">
-            {/* 手機：打開 Sheet */}
-            <button
-              aria-label="Open navigation"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent md:hidden"
-              onClick={() => setMobileOpen(true)}
-            >
-              <Menu className="h-5 w-5" />
-            </button>
+        <div className="flex min-h-screen flex-col">
+          <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
+            <div className="flex h-14 items-center gap-2 px-4">
+              {/* 手機：打開 Sheet */}
+              <button
+                aria-label="Open navigation"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent md:hidden"
+                onClick={() => setMobileOpen(true)}
+              >
+                <Menu className="h-5 w-5" />
+              </button>
 
-            {/* 桌機：切換固定側欄寬度 */}
-            <button
-              aria-label="Toggle sidebar"
-              aria-expanded={desktopOpen}
-              className="hidden md:inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent"
-              onClick={() => setDesktopOpen((v) => !v)}
-            >
-              <Menu className="h-5 w-5" />
-            </button>
+              {/* 桌機：切換固定側欄寬度 */}
+              <button
+                aria-label="Toggle sidebar"
+                aria-expanded={desktopOpen}
+                className="hidden md:inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent"
+                onClick={() => setDesktopOpen((v) => !v)}
+              >
+                <Menu className="h-5 w-5" />
+              </button>
 
-            <div className="text-base font-semibold">yt-playlist-manager</div>
-          </div>
-        </header>
+              <div className="flex items-center gap-1.5 text-base font-semibold">
+                <Image src="/logo.png" alt="App Logo" width={20} height={20} />
+                YT Playlist Manager
+              </div>
+            </div>
+          </header>
 
-        <main className="p-6">{children}</main>
+          {/* 撐開剩餘高度的主內容 */}
+          <main className="flex-1 p-6">{children}</main>
+
+          {/* 會貼齊底部的 Footer（可選） */}
+          {footer ?? null}
+        </div>
       </div>
     </div>
   );

@@ -31,6 +31,9 @@ export interface ActionsToolbarProps {
   addLoading?: boolean;
   removeLoading?: boolean;
   moveLoading?: boolean;
+
+  /** ✅ 是否可復原（控制 Undo 按鈕啟用） */
+  canUndo?: boolean;
 }
 
 export function ActionsToolbar(props: ActionsToolbarProps) {
@@ -48,6 +51,7 @@ export function ActionsToolbar(props: ActionsToolbarProps) {
     addLoading,
     removeLoading,
     moveLoading,
+    canUndo,
   } = props;
 
   // 非受控：自己保留目標值
@@ -96,6 +100,7 @@ export function ActionsToolbar(props: ActionsToolbarProps) {
           value={currentTargetId ?? ""}
           onChange={handleSelectChange}
           disabled={targetDisabled}
+          aria-label="目標播放清單"
         >
           <option value="">選擇目標播放清單</option>
           {playlists.map((p) => (
@@ -111,6 +116,7 @@ export function ActionsToolbar(props: ActionsToolbarProps) {
           variant="secondary"
           onClick={() => onAdd(currentTargetId)}
           disabled={addBusy || nothingSelected || !currentTargetId}
+          aria-disabled={addBusy || nothingSelected || !currentTargetId}
         >
           {addBusy ? (
             <>
@@ -128,6 +134,7 @@ export function ActionsToolbar(props: ActionsToolbarProps) {
           variant="outline"
           onClick={onRemove}
           disabled={removeBusy || nothingSelected}
+          aria-disabled={removeBusy || nothingSelected}
         >
           {removeBusy ? (
             <>
@@ -144,6 +151,7 @@ export function ActionsToolbar(props: ActionsToolbarProps) {
           size="sm"
           onClick={() => onMove(currentTargetId)}
           disabled={moveBusy || nothingSelected || !currentTargetId}
+          aria-disabled={moveBusy || nothingSelected || !currentTargetId}
         >
           {moveBusy ? (
             <>
@@ -155,11 +163,14 @@ export function ActionsToolbar(props: ActionsToolbarProps) {
           )}
         </Button>
 
+        {/* 復原：只有有可復原動作時才可按 */}
         <Button
           size="sm"
           variant="ghost"
           onClick={onUndo}
-          disabled={busyAll /* 可視情況也跟個別 busy 綁 */}
+          disabled={busyAll || !canUndo}
+          aria-disabled={busyAll || !canUndo}
+          title={canUndo ? "復原上一個動作" : "暫無可復原的動作"}
         >
           復原
         </Button>

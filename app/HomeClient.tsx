@@ -135,6 +135,7 @@ async function fetchAuth(): Promise<AuthState> {
 }
 
 // 把一批「暫時的影片資料」加到目標清單的快取（若不存在則忽略）
+// ✅ 穩健版：避免重複 key，並以真實 item 取代 temp
 function addToPlaylistCache(
   queryClient: import("@tanstack/react-query").QueryClient,
   playlistId: string,
@@ -146,13 +147,44 @@ function addToPlaylistCache(
     items: PlaylistItemSummary[];
   }>(key);
   if (!prev) return;
-  const existingIds = new Set(prev.items.map((it) => it.videoId));
+
+  // 以 playlistItemId / videoId 雙索引去重
+  const byId = new Map<string, PlaylistItemSummary>();
+  const byVid = new Map<string, PlaylistItemSummary>();
+
+  for (const it of prev.items) {
+    byId.set(it.playlistItemId, it);
+    byVid.set(it.videoId, it);
+  }
+
+  for (const incoming of addItems) {
+    const incomingIsReal = !incoming.playlistItemId.startsWith("temp-");
+    const existedByVid = byVid.get(incoming.videoId);
+    const existedById = byId.get(incoming.playlistItemId);
+
+    // 已有相同 playlistItemId → 略過，避免 key 重複
+    if (existedById) continue;
+
+    if (existedByVid) {
+      const existedIsTemp = existedByVid.playlistItemId.startsWith("temp-");
+      // 若舊的是 temp、新的是「真實 item」→ 用真實 item 取代 temp
+      if (incomingIsReal && existedIsTemp) {
+        byId.delete(existedByVid.playlistItemId); // 移除舊 temp
+        byId.set(incoming.playlistItemId, incoming);
+        byVid.set(incoming.videoId, incoming);
+      }
+      // 否則代表同一支影片已存在（無論真實或 temp）→ 略過
+      continue;
+    }
+
+    // 全新影片 → 直接加入
+    byId.set(incoming.playlistItemId, incoming);
+    byVid.set(incoming.videoId, incoming);
+  }
+
   const next = {
     ...prev,
-    items: [
-      ...prev.items,
-      ...addItems.filter((it) => !existingIds.has(it.videoId)),
-    ],
+    items: Array.from(byId.values()),
   };
   queryClient.setQueryData(key, next);
 }
@@ -389,6 +421,92 @@ export default function HomeClient() {
     label: string;
   }>({ status: "idle", label: "" });
 
+  /* ---- ✅ Undo：狀態與工具 ---- */
+  type LastOp =
+    | { type: "add"; targetPlaylistId: string; videoIds: string[] }
+    | { type: "remove"; sourcePlaylistId: string; videoIds: string[] }
+    | {
+        type: "move";
+        sourcePlaylistId: string;
+        targetPlaylistId: string;
+        videoIds: string[];
+      };
+  const [lastOp, setLastOp] = React.useState<LastOp | null>(null);
+
+  // 取代原本的 findItemIdsByVideoIds，改名並回傳 pair
+  async function findItemsInPlaylistByVideoIds(
+    playlistId: string,
+    videoIds: string[]
+  ): Promise<Array<{ playlistItemId: string; videoId: string }>> {
+    const need: Set<string> = new Set<string>(videoIds);
+
+    // 1) 先看快取
+    const key = ["playlist-items", playlistId] as const;
+    const cache = queryClient.getQueryData<{
+      playlist: PlaylistSummary;
+      items: PlaylistItemSummary[];
+    }>(key);
+
+    let items: PlaylistItemSummary[] = cache?.items ?? [];
+
+    // 2) 快取不足 → 走 API（遍歷分頁直到找到或無更多頁）
+    const missingInCache =
+      items.length === 0 ||
+      [...need].some(
+        (v: string) => !items.some((i: PlaylistItemSummary) => i.videoId === v)
+      );
+
+    if (missingInCache) {
+      let pageToken: string | null = null;
+      const found: PlaylistItemSummary[] = [];
+
+      do {
+        const url: string =
+          `/api/playlist-items?playlistId=${encodeURIComponent(playlistId)}` +
+          (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "");
+
+        const data: PlaylistItemsPayload =
+          await apiRequest<PlaylistItemsPayload>(url);
+
+        const pageItems: PlaylistItemSummary[] = (data.items ?? []).map(
+          (it: PlaylistItemApiEntry): PlaylistItemSummary => ({
+            playlistItemId: it.id,
+            videoId: it.videoId,
+            title: it.title,
+            channelTitle: it.channelTitle,
+            thumbnailUrl: extractThumbnailUrl(it.thumbnails),
+            position: it.position ?? null,
+          })
+        );
+
+        found.push(...pageItems);
+
+        // 提前結束：已找到所有需要的 videoId
+        const allFound = [...need].every((v: string) =>
+          found.some((i: PlaylistItemSummary) => i.videoId === v)
+        );
+        if (allFound) {
+          items = found;
+          break;
+        }
+
+        pageToken = data.nextPageToken ?? null;
+        if (!pageToken) {
+          items = found; // 沒有更多頁
+          break;
+        }
+      } while (true);
+    }
+
+    // 3) 只回傳需要的 pair（忽略沒找到的）
+    return items
+      .filter((i: PlaylistItemSummary) => need.has(i.videoId))
+      .map((i: PlaylistItemSummary) => ({
+        playlistItemId: i.playlistItemId,
+        videoId: i.videoId,
+      }));
+  }
+
   /* ---- 稿件 1：多選播放清單 ---- */
   const [checkedPlaylistIds, setCheckedPlaylistIds] = React.useState<
     Set<string>
@@ -536,8 +654,20 @@ export default function HomeClient() {
       }
     },
 
-    onSuccess: () => {
+    onSuccess: (_res, variables) => {
       setActionToast({ status: "success", label: "新增到播放清單" });
+
+      // ✅ 記錄可復原資訊
+      setLastOp({
+        type: "add",
+        targetPlaylistId: variables.targetPlaylistId,
+        videoIds: variables.videoIds,
+      });
+
+      // ✅ 新增成功後，自動清空所有欄位的勾選
+      startTransition(() => {
+        setSelectedMap({});
+      });
     },
 
     onSettled: async (_data, _error, variables) => {
@@ -600,8 +730,17 @@ export default function HomeClient() {
       setActionToast({ status: "error", label: "從清單移除" });
     },
 
-    onSuccess: () => {
+    onSuccess: (_res, _vars, ctx) => {
       setActionToast({ status: "success", label: "從清單移除" });
+      // ✅ 記錄可復原資訊（用 videoIds）
+      const vids = (ctx?.backupRemoved ?? []).map((i) => i.videoId);
+      if (vids.length) {
+        setLastOp({
+          type: "remove",
+          sourcePlaylistId: _vars.sourcePlaylistId,
+          videoIds: vids,
+        });
+      }
     },
 
     onSettled: async (_data, _error, variables) => {
@@ -710,8 +849,18 @@ export default function HomeClient() {
       setActionToast({ status: "error", label: "一併移轉" });
     },
 
-    onSuccess: () => {
+    onSuccess: (_res, vars, ctx) => {
       setActionToast({ status: "success", label: "一併移轉" });
+      // ✅ 記錄可復原資訊
+      const vids = (ctx?.backupSourceItems ?? []).map((i) => i.videoId);
+      if (vids.length) {
+        setLastOp({
+          type: "move",
+          sourcePlaylistId: vars.sourcePlaylistId,
+          targetPlaylistId: vars.targetPlaylistId,
+          videoIds: vids,
+        });
+      }
     },
 
     onSettled: async (_d, _e, { sourcePlaylistId, targetPlaylistId }) => {
@@ -842,7 +991,173 @@ export default function HomeClient() {
     });
   };
 
-  const onUndo = () => {};
+  const onUndo = async () => {
+    if (!lastOp) return;
+    setActionToast({ status: "loading", label: "復原" });
+
+    // 小工具：延遲
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    try {
+      if (lastOp.type === "add") {
+        // 復原新增：從目標清單刪掉剛新增的影片（需要 itemId）
+        const pairs = await findItemsInPlaylistByVideoIds(
+          lastOp.targetPlaylistId,
+          lastOp.videoIds
+        );
+        const ids = pairs.map((p) => p.playlistItemId);
+
+        if (ids.length) {
+          await apiRequest<OperationResult>("/api/bulk/remove", {
+            method: "POST",
+            body: JSON.stringify({
+              sourcePlaylistId: lastOp.targetPlaylistId,
+              playlistItemIds: ids,
+              idempotencyKey: makeIdemKey("undo-remove"),
+            }),
+          });
+        }
+
+        // 強化同步：雙重 refetch
+        await queryClient.invalidateQueries({
+          queryKey: ["playlist-items", lastOp.targetPlaylistId],
+        });
+        await sleep(200);
+        await queryClient.refetchQueries({
+          queryKey: ["playlist-items", lastOp.targetPlaylistId],
+          type: "active",
+        });
+        await sleep(150);
+        await queryClient.refetchQueries({
+          queryKey: ["playlist-items", lastOp.targetPlaylistId],
+          type: "active",
+        });
+
+        await queryClient.invalidateQueries({ queryKey: ["playlists"] });
+      } else if (lastOp.type === "remove") {
+        // 復原移除：把影片加回原清單（需要 videoId）
+        // 先做「樂觀回填」避免 UI 少 1：以 temp-* 佔位
+        const optimisticBackItems: PlaylistItemSummary[] = lastOp.videoIds.map(
+          (vid) => ({
+            playlistItemId: `temp-${vid}`,
+            videoId: vid,
+            title: "（復原中）",
+            channelTitle: "",
+            thumbnailUrl: null,
+            position: null,
+          })
+        );
+        addToPlaylistCache(
+          queryClient,
+          lastOp.sourcePlaylistId,
+          optimisticBackItems
+        );
+
+        try {
+          await apiRequest<OperationResult>("/api/bulk/add", {
+            method: "POST",
+            body: JSON.stringify({
+              targetPlaylistId: lastOp.sourcePlaylistId,
+              videoIds: lastOp.videoIds,
+              idempotencyKey: makeIdemKey("undo-add"),
+            }),
+          });
+        } catch (e) {
+          // 失敗回滾 temp
+          removeTempFromPlaylistCache(
+            queryClient,
+            lastOp.sourcePlaylistId,
+            lastOp.videoIds
+          );
+          throw e;
+        }
+
+        // 成功後：雙重 refetch 對齊最終狀態，並清理 temp（若仍存在）
+        await queryClient.invalidateQueries({
+          queryKey: ["playlist-items", lastOp.sourcePlaylistId],
+        });
+        await sleep(200);
+        await queryClient.refetchQueries({
+          queryKey: ["playlist-items", lastOp.sourcePlaylistId],
+          type: "active",
+        });
+        await sleep(150);
+        await queryClient.refetchQueries({
+          queryKey: ["playlist-items", lastOp.sourcePlaylistId],
+          type: "active",
+        });
+
+        // 清 temp（通常 refetch 後會被真實 item 取代，但保險再清一次）
+        removeTempFromPlaylistCache(
+          queryClient,
+          lastOp.sourcePlaylistId,
+          lastOp.videoIds
+        );
+
+        await queryClient.invalidateQueries({ queryKey: ["playlists"] });
+      } else if (lastOp.type === "move") {
+        // 復原移轉：把影片從 target 搬回 source（需要 {playlistItemId, videoId}）
+        const pairs = await findItemsInPlaylistByVideoIds(
+          lastOp.targetPlaylistId,
+          lastOp.videoIds
+        );
+        if (pairs.length) {
+          await apiRequest<OperationResult>("/api/bulk/move", {
+            method: "POST",
+            body: JSON.stringify({
+              sourcePlaylistId: lastOp.targetPlaylistId,
+              targetPlaylistId: lastOp.sourcePlaylistId,
+              items: pairs,
+              idempotencyKey: makeIdemKey("undo-move"),
+            }),
+          });
+        }
+
+        // 兩側都做雙重 refetch
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["playlist-items", lastOp.sourcePlaylistId],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["playlist-items", lastOp.targetPlaylistId],
+          }),
+        ]);
+        await sleep(200);
+        await Promise.all([
+          queryClient.refetchQueries({
+            queryKey: ["playlist-items", lastOp.sourcePlaylistId],
+            type: "active",
+          }),
+          queryClient.refetchQueries({
+            queryKey: ["playlist-items", lastOp.targetPlaylistId],
+            type: "active",
+          }),
+        ]);
+        await sleep(150);
+        await Promise.all([
+          queryClient.refetchQueries({
+            queryKey: ["playlist-items", lastOp.sourcePlaylistId],
+            type: "active",
+          }),
+          queryClient.refetchQueries({
+            queryKey: ["playlist-items", lastOp.targetPlaylistId],
+            type: "active",
+          }),
+        ]);
+
+        await queryClient.invalidateQueries({ queryKey: ["playlists"] });
+      }
+
+      setActionToast({ status: "success", label: "復原" });
+      // 若你有 lastOp 的 state：清掉它（單步復原）
+      setLastOp?.(null);
+    } catch (_err) {
+      setActionToast({ status: "error", label: "復原" });
+    } finally {
+      setTimeout(() => setActionToast((s) => ({ ...s, status: "idle" })), 0);
+    }
+  };
+
   const backToSelect = () => setView("select-playlists");
   const clearAllSelections = () => setSelectedMap({});
 
@@ -1042,6 +1357,8 @@ export default function HomeClient() {
               addLoading={addMutation.isPending}
               removeLoading={removeMutation.isPending}
               moveLoading={moveMutation.isPending}
+              /* ✅ 有上一個成功操作才可 Undo */
+              canUndo={Boolean(lastOp)}
             />
           </section>
 
