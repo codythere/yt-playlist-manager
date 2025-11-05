@@ -920,7 +920,7 @@ function ActionDetails({
                     <th className="py-2 pr-3">Status</th>
                     <th className="py-2 pr-3">Source</th>
                     <th className="py-2 pr-3">Target</th>
-                    <th className="py-2 pr-3">Video / Items</th>
+                    <th className="py-2 pr-3">Video</th>
                     <th className="py-2">Error</th>
                   </tr>
                 </thead>
