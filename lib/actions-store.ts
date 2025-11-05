@@ -83,7 +83,9 @@ const insertActionItemStmt = db.prepare(
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 
-const selectActionItemByIdStmt = db.prepare("SELECT * FROM action_items WHERE id = ?");
+const selectActionItemByIdStmt = db.prepare(
+  "SELECT * FROM action_items WHERE id = ?"
+);
 
 const selectActionItemsStmt = db.prepare(
   "SELECT * FROM action_items WHERE action_id = ? ORDER BY rowid ASC"
@@ -107,6 +109,35 @@ const updateActionItemStmt = db.prepare(
    WHERE id = ?`
 );
 
+// === Items 分頁用（不影響既有 listActionItems） ===
+const selectActionItemRowidByIdStmt = db.prepare(
+  "SELECT rowid AS r FROM action_items WHERE id = ?"
+);
+
+// 以 rowid 升冪，使用普通 ? 佔位，避免序號綁定問題
+const selectActionItemsPageAscStmt = db.prepare(
+  `SELECT * FROM action_items
+   WHERE action_id = ?
+     AND (? IS NULL OR rowid > ?)
+   ORDER BY rowid ASC
+   LIMIT ?`
+);
+
+// ✅ 嚴格版：一定回傳 string
+function toIsoUtcStrict(ts: string): string {
+  if (!ts) return ts; // 如果你的 DB schema 保證非空，這行其實不會觸發
+  // SQLite CURRENT_TIMESTAMP: 'YYYY-MM-DD HH:MM:SS' (UTC)
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts)) {
+    return ts.replace(" ", "T") + "Z";
+  }
+  return ts; // 已是 ISO 或其他格式則原樣
+}
+
+// ✅ 可為 null 的版本
+function toIsoUtcNullable(ts: string | null): string | null {
+  return ts ? toIsoUtcStrict(ts) : null;
+}
+
 function mapAction(row: ActionRow): ActionRecord {
   return {
     id: row.id,
@@ -115,8 +146,8 @@ function mapAction(row: ActionRow): ActionRecord {
     sourcePlaylistId: row.source_playlist_id ?? null,
     targetPlaylistId: row.target_playlist_id ?? null,
     status: row.status,
-    createdAt: row.created_at,
-    finishedAt: row.finished_at ?? null,
+    createdAt: toIsoUtcStrict(row.created_at), // ★ 這裡
+    finishedAt: toIsoUtcNullable(row.finished_at), // ★ 這裡
     parentActionId: row.parent_action_id ?? null,
   };
 }
@@ -165,8 +196,17 @@ export function createAction(params: {
   return mapAction(row);
 }
 
-export function setActionStatus(id: string, status: ActionStatus, finishedAt?: string | null) {
-  updateActionStatusStmt.run(status, finishedAt ?? null, finishedAt ?? null, id);
+export function setActionStatus(
+  id: string,
+  status: ActionStatus,
+  finishedAt?: string | null
+) {
+  updateActionStatusStmt.run(
+    status,
+    finishedAt ?? null,
+    finishedAt ?? null,
+    id
+  );
   const row = selectActionByIdStmt.get(id) as ActionRow | undefined;
   if (!row) {
     throw new Error("Failed to load action after update");
@@ -174,20 +214,22 @@ export function setActionStatus(id: string, status: ActionStatus, finishedAt?: s
   return mapAction(row);
 }
 
-export function createActionItems(items: Array<{
-  id?: string;
-  actionId: string;
-  type: ActionType;
-  videoId?: string | null;
-  sourcePlaylistId?: string | null;
-  targetPlaylistId?: string | null;
-  sourcePlaylistItemId?: string | null;
-  targetPlaylistItemId?: string | null;
-  position?: number | null;
-  status?: ActionItemStatus;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-}>) {
+export function createActionItems(
+  items: Array<{
+    id?: string;
+    actionId: string;
+    type: ActionType;
+    videoId?: string | null;
+    sourcePlaylistId?: string | null;
+    targetPlaylistId?: string | null;
+    sourcePlaylistItemId?: string | null;
+    targetPlaylistItemId?: string | null;
+    position?: number | null;
+    status?: ActionItemStatus;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  }>
+) {
   const created: ActionItemRecord[] = [];
   for (const item of items) {
     const id = item.id ?? nanoid();
@@ -213,20 +255,27 @@ export function createActionItems(items: Array<{
   return created;
 }
 
-export function updateActionItem(id: string, updates: {
-  status?: ActionItemStatus;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-  targetPlaylistItemId?: string | null;
-}) {
-  const existing = selectActionItemByIdStmt.get(id) as ActionItemRow | undefined;
+export function updateActionItem(
+  id: string,
+  updates: {
+    status?: ActionItemStatus;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    targetPlaylistItemId?: string | null;
+  }
+) {
+  const existing = selectActionItemByIdStmt.get(id) as
+    | ActionItemRow
+    | undefined;
   if (!existing) {
     return null;
   }
   const mergedStatus = updates.status ?? existing.status;
   const mergedErrorCode = updates.errorCode ?? existing.error_code ?? null;
-  const mergedErrorMessage = updates.errorMessage ?? existing.error_message ?? null;
-  const mergedTarget = updates.targetPlaylistItemId ?? existing.target_playlist_item_id ?? null;
+  const mergedErrorMessage =
+    updates.errorMessage ?? existing.error_message ?? null;
+  const mergedTarget =
+    updates.targetPlaylistItemId ?? existing.target_playlist_item_id ?? null;
 
   updateActionItemStmt.run(
     mergedStatus,
@@ -249,21 +298,124 @@ export function getActionById(id: string) {
   return row ? mapAction(row) : null;
 }
 
-export function listActions(userId: string, limit: number, cursor?: string | null) {
+export function listActions(
+  userId: string,
+  limit: number,
+  cursor?: string | null
+) {
   let cursorTimestamp: string | null = null;
   if (cursor) {
-    const cursorAction = selectActionByIdStmt.get(cursor) as ActionRow | undefined;
+    const cursorAction = selectActionByIdStmt.get(cursor) as
+      | ActionRow
+      | undefined;
     cursorTimestamp = cursorAction?.created_at ?? null;
   }
-  const rows = selectActionsPageStmt.all(userId, cursorTimestamp, limit) as ActionRow[];
+  const rows = selectActionsPageStmt.all(
+    userId,
+    cursorTimestamp,
+    limit
+  ) as ActionRow[];
   return rows.map(mapAction);
 }
 
 export function getActionCounts(actionId: string): ActionCounts {
-  const row = countActionItemsStmt.get(actionId) as { total: number; success: number; failed: number } | undefined;
+  const row = countActionItemsStmt.get(actionId) as
+    | { total: number; success: number; failed: number }
+    | undefined;
   return {
     total: row?.total ?? 0,
     success: row?.success ?? 0,
     failed: row?.failed ?? 0,
   };
+}
+
+// ✅ 全新：不用序號參數（?1 ?2 ?3），只用普通 ? 佔位
+const selectActionsPageStmtNoIndex = db.prepare(
+  `SELECT * FROM actions
+   WHERE user_id = ?
+     AND (? IS NULL OR created_at < ?)
+   ORDER BY created_at DESC
+   LIMIT ?`
+);
+
+/**
+ * ✅ 提供 /api/actions 專用的安全版分頁
+ *   - 絕不動現有的 listActions()
+ *   - 內部用普通 ? 佔位，並採多引數綁定（或陣列也行）
+ */
+// /lib/actions-store.ts 內的 listActionsPageSafe()
+export function listActionsPageSafe(
+  userId: string,
+  limit: number,
+  cursor?: string | null
+) {
+  let cursorTimestamp: string | null = null;
+  if (cursor) {
+    const cursorAction = selectActionByIdStmt.get(cursor) as
+      | ActionRow
+      | undefined;
+    cursorTimestamp = cursorAction?.created_at ?? null;
+  }
+
+  // ⬇️ 這行改成 4 個參數：cursorTimestamp 要傳兩次
+  const rows = selectActionsPageStmtNoIndex.all(
+    userId,
+    cursorTimestamp,
+    cursorTimestamp,
+    limit
+  ) as ActionRow[];
+
+  return rows.map(mapAction);
+}
+
+// =========================
+// Items 分頁（rowid 方式，安全版）
+// =========================
+
+// 取某 item 的 rowid（拿來當 cursor）
+const selectItemRowidByIdStmt = db.prepare(
+  `SELECT rowid as rid FROM action_items WHERE id = ?`
+);
+
+// 用普通 ? 佔位，避免 ?1/?2 混淆
+const selectActionItemsPageStmtNoIndex = db.prepare(
+  `SELECT * FROM action_items
+   WHERE action_id = ?
+     AND (? IS NULL OR rowid > ?)
+   ORDER BY rowid ASC
+   LIMIT ?`
+);
+
+/**
+ * listActionItemsPageSafe
+ * - 依 rowid 升冪分頁
+ * - cursor 為「上一頁最後一筆 item 的 id」（不是 rowid），內部會轉成 rowid
+ * - 回傳 { items, nextCursor }
+ */
+export function listActionItemsPageSafe(
+  actionId: string,
+  limit: number,
+  cursor?: string | null
+): { items: ActionItemRecord[]; nextCursor: string | null } {
+  let cursorRid: number | null = null;
+  if (cursor) {
+    const r = selectItemRowidByIdStmt.get(cursor) as
+      | { rid: number }
+      | undefined;
+    cursorRid = r?.rid ?? null;
+  }
+
+  const rows = selectActionItemsPageStmtNoIndex.all(
+    actionId,
+    cursorRid,
+    cursorRid,
+    limit + 1 // 多抓一筆看有沒有下一頁
+  ) as ActionItemRow[];
+
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  const items = pageRows.map(mapActionItem);
+  const nextCursor = hasMore ? pageRows[pageRows.length - 1].id : null;
+
+  return { items, nextCursor };
 }

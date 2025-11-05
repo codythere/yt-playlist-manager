@@ -1,18 +1,31 @@
-import { jsonError, jsonOk } from "@/lib/result";
+import type { NextRequest } from "next/server";
+import { jsonOk, jsonError } from "@/lib/result";
 import { requireUserId } from "@/lib/auth";
-import { getActionSummary } from "@/lib/actions-service";
+import { getActionById, getActionCounts } from "@/lib/actions-store";
 
-export async function GET(_request: Request, context: { params: { id: string } }) {
-  const auth = requireUserId();
-  if (!auth) {
-    return jsonError("unauthorized", "Sign in to continue", { status: 401 });
+export async function GET(
+  req: NextRequest,
+  ctx: { params: Promise<{ id: string }> } // ⬅️ 注意這裡：Promise
+) {
+  try {
+    const auth = await requireUserId(req);
+    if (!auth)
+      return jsonError("unauthorized", "Sign in required", { status: 401 });
+
+    const { id } = await ctx.params; // ⬅️ 必須 await
+    const action = getActionById(id);
+    if (!action)
+      return jsonError("not_found", "Action not found", { status: 404 });
+    if (action.userId !== auth.userId) {
+      return jsonError("forbidden", "You do not have access to this action", {
+        status: 403,
+      });
+    }
+
+    const counts = getActionCounts(id);
+    return jsonOk({ action, counts });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Internal error";
+    return jsonError("internal_error", msg, { status: 500 });
   }
-
-  const actionId = context.params.id;
-  const summary = getActionSummary(actionId);
-  if (!summary || summary.action.userId !== auth.userId) {
-    return jsonError("invalid_request", "Action not found", { status: 404 });
-  }
-
-  return jsonOk(summary);
 }
