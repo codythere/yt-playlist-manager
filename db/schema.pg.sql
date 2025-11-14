@@ -1,7 +1,5 @@
 -- db/schema.pg.sql  將此檔在 Postgres 執行（Render PG/Neon/Supabase 皆可）
 
--- 舊 schema.sql（SQLite）等價的 PG 版
-
 CREATE TABLE IF NOT EXISTS oauth_tokens (
   id BIGSERIAL PRIMARY KEY,
   user_id TEXT,

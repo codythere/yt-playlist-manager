@@ -8,7 +8,6 @@ A Next.js (App Router) application for managing YouTube playlists in bulk. Sign 
 ## Features
 
 - Google OAuth 2.0 login with secure, signed sessions
-- Automatic refresh-token storage in SQLite (Better SQLite3)
 - Live YouTube Data API v3 integration (playlists & playlist items)
 - Bulk add, move, and remove actions with idempotency + action history
 - React Query powered UI with optimistic refresh, toasts, and loading/error states
@@ -30,13 +29,12 @@ A Next.js (App Router) application for managing YouTube playlists in bulk. Sign 
 ## Environment variables
 
 | Variable               | Required | Description                                                                   |
-| ---------------------- | -------- | ----------------------------------------------------------------------------- |
+| ---------------------- | -------- | ----------------------------------------------------------------------------- | --- |
 | `GOOGLE_CLIENT_ID`     | Yes      | OAuth client ID issued by Google.                                             |
 | `GOOGLE_CLIENT_SECRET` | Yes      | OAuth client secret.                                                          |
 | `GOOGLE_REDIRECT_URI`  | Yes      | Redirect URL (defaults to `http://localhost:3000/api/auth/callback`).         |
 | `SESSION_SECRET`       | Yes      | Secret used to sign session cookies (use a long random string in production). |
-| `APP_BASE_URL`         | Yes      | Base URL used for redirects and links (e.g. `http://localhost:3000`).         |
-| `SQLITE_DB_PATH`       | No       | Override the SQLite file path (defaults to `./db/data.sqlite3`).              |
+| `APP_BASE_URL`         | Yes      | Base URL used for redirects and links (e.g. `http://localhost:3000`).         |     |
 | `LOG_LEVEL`            | No       | Pino logger level (`debug`, `info`, `warn`, `error`).                         |
 
 ### Getting started
@@ -71,10 +69,6 @@ A Next.js (App Router) application for managing YouTube playlists in bulk. Sign 
    - _Remove selected:_ removes the checked videos from the current playlist.
    - _Move selected:_ pick another playlist in the dropdown and press _Move selected_.
 5. **Review history:** open [/action-log](http://localhost:3000/action-log) to inspect past actions, retry failed items, or undo a batch.
-
-## Database
-
-Refresh tokens, idempotency keys, and action history are stored in SQLite (`db/data.sqlite3` by default). The schema is applied automatically. Delete the file if you want a clean local state (a new database will be created on next start).
 
 ## Testing & linting
 

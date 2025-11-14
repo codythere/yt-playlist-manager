@@ -4,7 +4,6 @@ import { clearSessionCookie, getCurrentUser } from "@/lib/auth";
 import { deleteTokensByUserId, getTokensByUserId } from "@/lib/tokens";
 import { revokeRefreshToken, revokeAccessToken } from "@/lib/google-revoke";
 
-// ✅ 確保使用 Node.js runtime（better-sqlite3 需要）
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 

@@ -130,7 +130,7 @@ If any table is missing, re-run schema.pg.sql.
 
 Once DB is ready：
 
-pnpm dev
+npm run dev
 
 測試端點：
 
@@ -179,10 +179,6 @@ If deploying to Render:
 
 # 11. FAQ
 
-    Q: 是否需要 Prisma？
+Q: 是否需要 Prisma？
 
 A: 不需要，目前是純 SQL 模式，效能與可控性更高。
-
-Q: SQLite 可否保留？
-
-A: 可以，但建議統一使用 Postgres。
