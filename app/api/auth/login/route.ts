@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { buildAuthUrl, isGoogleConfigured } from "@/lib/google";
 import { jsonError } from "@/lib/result";
 
+export const dynamic = "force-dynamic";
 const STATE_COOKIE = "ytpm_oauth_state";
 
 export async function GET() {
