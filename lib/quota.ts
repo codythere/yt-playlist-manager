@@ -21,7 +21,7 @@ export const QUOTA_MODE: QuotaMode =
 const DAILY_BUDGET =
   Number(
     process.env.YTPM_DAILY_QUOTA ?? process.env.NEXT_PUBLIC_YTPM_DAILY_QUOTA
-  ) || 10_000;
+  ) || 10_0000;
 
 /** 產生 PT（美國太平洋時間）當日 key：YYYY-MM-DD */
 function todayKeyPT() {
